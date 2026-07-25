@@ -163,12 +163,21 @@ button{cursor:pointer;}.rounded-xl{border-radius:12px;}.rounded-full{border-radi
   <!-- ========== 2. PRACTICE VIEW (练习 / 考试 / 知识点共用) ========== -->
   <div id="practiceView" class="page-view px-4 pt-4">
     <!-- Progress bar -->
-    <div class="flex items-center gap-2 mb-4">
+    <div class="flex items-center gap-2 mb-1">
       <span id="pracProgress" class="text-xs text-gray-500"></span>
       <div class="flex-1 bg-gray-200 rounded-full h-2">
         <div id="pracProgressBar" class="bg-primary rounded-full h-2 transition-all" style="width:0%"></div>
       </div>
       <span id="pracTimer" class="text-xs text-gray-500 hidden"></span>
+    </div>
+
+    <!-- Question navigator toggle (practice mode) -->
+    <div id="pracNavContainer" class="hidden mb-3">
+      <button id="pracNavToggle" onclick="toggleNavigator()" class="text-xs text-primary font-medium flex items-center gap-1 mb-1 active:opacity-70">
+        <span id="pracNavIcon">▶</span> <span id="pracNavLabel">显示题号</span>
+        <span id="pracNavCount" class="text-gray-400"></span>
+      </button>
+      <div id="pracNavigator" class="hidden max-h-60 overflow-y-auto pb-1" style="scrollbar-width:thin"></div>
     </div>
 
     <!-- Question card -->
@@ -217,7 +226,22 @@ button{cursor:pointer;}.rounded-xl{border-radius:12px;}.rounded-full{border-radi
     <button onclick="resetStats()" class="w-full mt-4 py-2 border border-danger text-danger rounded-xl text-sm">重置学习记录</button>
   </div>
 
-  <!-- ========== 4. WRONG QUESTIONS VIEW ========== -->
+  <!-- ========== 4. EXAM HISTORY VIEW ========== -->
+  <div id="historyView" class="page-view px-4 pt-4">
+    <h2 class="text-lg font-semibold mb-4">📋 模拟考试记录</h2>
+    <div id="historyList" class="space-y-2"></div>
+  </div>
+
+  <!-- ========== 5. EXAM HISTORY DETAIL VIEW ========== -->
+  <div id="historyDetailView" class="page-view px-4 pt-4 hidden">
+    <div class="flex items-center gap-3 mb-4">
+      <button onclick="switchTab('history')" class="text-lg active:opacity-60">← 返回</button>
+      <h2 class="text-lg font-semibold" id="historyDetailTitle">考试详情</h2>
+    </div>
+    <div id="historyDetailContent" class="space-y-3"></div>
+  </div>
+
+  <!-- ========== 6. WRONG QUESTIONS VIEW ========== -->
   <div id="wrongView" class="page-view px-4 pt-4">
     <div class="flex items-center justify-between mb-4">
       <h2 class="text-lg font-semibold">📌 错题集</h2>
@@ -270,6 +294,9 @@ button{cursor:pointer;}.rounded-xl{border-radius:12px;}.rounded-full{border-radi
     </button>
     <button onclick="switchTab('stats')" data-tab="stats" class="flex flex-col items-center gap-0.5 text-xs text-gray-400">
       <span class="text-lg">📊</span> 统计
+    </button>
+    <button onclick="switchTab('history')" data-tab="history" class="flex flex-col items-center gap-0.5 text-xs text-gray-400">
+      <span class="text-lg">📋</span> 考试
     </button>
     <button onclick="switchTab('wrong')" data-tab="wrong" class="flex flex-col items-center gap-0.5 text-xs text-gray-400">
       <span class="text-lg">📌</span> 错题集
@@ -360,6 +387,7 @@ const APP = {
   selectedSection: '',     // Selected knowledge section
   aiKey: '',               // DeepSeek API key
   aiCache: {},            // { [questionId]: answerText } cached AI results
+  examHistory: [],         // [{ timestamp, type, total, correct, details }]
 };
 
 // ========== DOM REFS ==========
@@ -413,17 +441,19 @@ function switchTab(tab) {
   document.querySelectorAll('.page-view').forEach(v => v.classList.remove('active'));
 
   // Show relevant view
-  const viewMap = { home: 'homeView', stats: 'statsView', wrong: 'wrongView', settings: 'settingsView' };
+  // Hide detail views
+  $('historyDetailView').classList.add('hidden');
+  $('historyDetailView').classList.remove('active');
+
+  const viewMap = { home: 'homeView', stats: 'statsView', history: 'historyView', wrong: 'wrongView', settings: 'settingsView' };
   const viewId = viewMap[tab];
   if (viewId) {
     $(viewId).classList.add('active');
     APP.currentMode = 'home';
-    // Stop exam timer if switching away
     if (APP.examTimer) { clearInterval(APP.examTimer); APP.examTimer = null; }
   }
 
-  // Update header
-  const titles = { home: '采气工中级 理论刷题', stats: '学习统计', wrong: '错题集', settings: '设置' };
+  const titles = { home: '采气工中级 理论刷题', stats: '学习统计', history: '考试记录', wrong: '错题集', settings: '设置' };
   $('headerTitle').textContent = titles[tab] || '采气工中级 理论刷题';
   $('headerBackBtn').classList.add('hidden');
   $('headerBadge').textContent = '';
@@ -431,6 +461,7 @@ function switchTab(tab) {
   // Update content
   if (tab === 'home') updateHomeStats();
   if (tab === 'stats') renderStats();
+  if (tab === 'history') renderHistory();
   if (tab === 'wrong') renderWrongList();
 
   // If in practice/exam view, clear it
@@ -450,10 +481,35 @@ function updateHomeStats() {
 // ========== PRACTICE MODE ==========
 function startFreePractice() {
   APP.currentMode = 'practice';
+
+  // Restore saved practice state if available
+  const saved = localStorage.getItem('caifu_practice_state');
+  if (saved) {
+    try {
+      const state = JSON.parse(saved);
+      if (state && state.questionIds && state.questionIds.length > 0) {
+        // Validate question IDs still exist
+        const validIds = state.questionIds.filter(id => APP.questions.some(q => q.id === id));
+        if (validIds.length > 0) {
+          APP.currentList = validIds.map(id => APP.questions.find(q => q.id === id)).filter(Boolean);
+          APP.currentIndex = Math.min(state.currentIndex || 0, APP.currentList.length - 1);
+          APP.userAnswers = state.userAnswers || {};
+          showPracticeView('自由练习');
+          renderNavigator();
+          renderQuestion();
+          setTimeout(restoreAnswerState, 50);
+          return;
+        }
+      }
+    } catch (e) { /* ignore corrupt state */ }
+  }
+
+  // Fresh start
   APP.currentList = shuffleArray([...APP.questions]);
   APP.currentIndex = 0;
   APP.userAnswers = {};
   showPracticeView('自由练习');
+  renderNavigator();
   renderQuestion();
 }
 
@@ -470,10 +526,84 @@ function showPracticeView(title) {
   if (APP.examTimer) { clearInterval(APP.examTimer); APP.examTimer = null; }
 }
 
+function renderNavigator() {
+  const container = $('pracNavContainer');
+  const nav = $('pracNavigator');
+  if (APP.currentMode !== 'practice') {
+    container.classList.add('hidden');
+    return;
+  }
+  container.classList.remove('hidden');
+  const total = APP.currentList.length;
+  const current = APP.currentIndex;
+  const answered = Object.keys(APP.userAnswers).length;
+  $('pracNavCount').textContent = `${answered}/${total}`;
+
+  // Determine columns: 10 for wide, 8 for narrow screens
+  const cols = window.innerWidth >= 420 ? 10 : window.innerWidth >= 360 ? 8 : 6;
+
+  let html = `<div class="grid gap-1" style="grid-template-columns:repeat(${cols},1fr)">`;
+  for (let i = 0; i < total; i++) {
+    const q = APP.currentList[i];
+    let cls = 'flex items-center justify-center rounded-lg text-xs font-medium py-1.5 cursor-pointer active:opacity-80 transition-all select-none';
+    const ans = APP.userAnswers[q.id] !== undefined;
+    if (i === current) {
+      cls += ' bg-primary text-white shadow-sm font-bold';
+    } else if (ans) {
+      cls += APP.userAnswers[q.id] === q.answer ? ' bg-green-100 text-green-700' : ' bg-red-100 text-red-700';
+    } else {
+      cls += ' bg-gray-100 text-gray-500';
+    }
+    html += `<button onclick="goToQuestion(${i})" class="${cls}">${i + 1}</button>`;
+  }
+  html += '</div>';
+  nav.innerHTML = html;
+
+  // Scroll the current question into view
+  const btns = nav.querySelectorAll('button');
+  if (btns[current]) {
+    btns[current].scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
+}
+
+function toggleNavigator() {
+  const nav = $('pracNavigator');
+  const icon = $('pracNavIcon');
+  const label = $('pracNavLabel');
+  const isOpen = !nav.classList.contains('hidden');
+  nav.classList.toggle('hidden');
+  icon.textContent = isOpen ? '▶' : '▼';
+  label.textContent = isOpen ? '显示题号' : '隐藏题号';
+}
+
+function goToQuestion(index) {
+  if (index < 0 || index >= APP.currentList.length) return;
+  APP.currentIndex = index;
+  renderNavigator();
+  renderQuestion();
+  setTimeout(restoreAnswerState, 50);
+}
+
+function savePracticeState() {
+  if (APP.currentMode !== 'practice') return;
+  try {
+    const state = {
+      questionIds: APP.currentList.map(q => q.id),
+      currentIndex: APP.currentIndex,
+      userAnswers: APP.userAnswers,
+    };
+    localStorage.setItem('caifu_practice_state', JSON.stringify(state));
+  } catch (e) { /* ignore quota exceeded */ }
+}
+
 function stopPractice() {
   APP.currentMode = 'home';
   APP.currentList = [];
   APP.currentIndex = 0;
+  APP.userAnswers = {};
+  localStorage.removeItem('caifu_practice_state');
+  $('pracNavContainer').classList.add('hidden');
+  $('pracNavigator').innerHTML = '';
 }
 
 function renderQuestion() {
@@ -491,6 +621,9 @@ function renderQuestion() {
   $('pracQuestionCard').classList.remove('fade-in');
   void $('pracQuestionCard').offsetWidth; // trigger reflow
   $('pracQuestionCard').classList.add('fade-in');
+
+  // Update navigator highlight
+  renderNavigator();
 
   // Type badge
   $('pracQType').style.display = 'inline-block';
@@ -601,6 +734,7 @@ function selectOption(questionId, selectedLabel, clickedBtn) {
   $('pracNextBtn').classList.remove('hidden');
 
   saveState();
+  savePracticeState();
   updateHomeStats();
 }
 
@@ -614,8 +748,8 @@ function nextQuestion() {
     }
   } else {
     renderQuestion();
-    // Restore answer state for previously answered question
     setTimeout(restoreAnswerState, 50);
+    savePracticeState();
   }
 }
 
@@ -660,17 +794,36 @@ function restoreAnswerState() {
 
 function finishPractice() {
   const total = APP.currentList.length;
-  const answered = Object.keys(APP.userAnswers).filter(id =>
-    APP.currentList.some(q => q.id === parseInt(id))
-  ).length;
   const correct = APP.currentList.filter(q => APP.userAnswers[q.id] === q.answer).length;
+  const allAnswered = APP.currentList.every(q => APP.userAnswers[q.id] !== undefined);
 
-  // Rebuild card content WITHOUT destroying child element structure
+  if (APP.currentMode === 'practice') {
+    if (allAnswered) {
+      // All questions answered → full reset to round 1
+      APP.currentIndex = 0;
+      APP.userAnswers = {};
+      const card = $('pracQuestionCard');
+      card.style.opacity = '0.5';
+      setTimeout(() => { card.style.opacity = '1'; }, 300);
+    } else {
+      // Still unanswered → jump to first unanswered question
+      APP.currentIndex = APP.currentList.findIndex(q => APP.userAnswers[q.id] === undefined);
+      if (APP.currentIndex < 0) APP.currentIndex = 0;
+    }
+    renderNavigator();
+    renderQuestion();
+    savePracticeState();
+    saveState();
+    updateHomeStats();
+    return;
+  }
+
+  // Exam mode: show summary
   $('pracQType').style.display = 'none';
   $('pracQuestion').innerHTML = `
     <div class="text-center py-8">
       <div class="text-4xl mb-3">${correct === total ? '🎉' : '📝'}</div>
-      <p class="text-lg font-semibold">${APP.currentMode === 'exam' ? '考试结束' : '练习完成'}</p>
+      <p class="text-lg font-semibold">考试结束</p>
       <p class="text-sm text-gray-500 mt-1">答对 ${correct} / ${total} 题</p>
       <p class="text-xl font-bold text-primary mt-2">${total > 0 ? Math.round(correct / total * 100) : 0}%</p>
     </div>`;
@@ -679,6 +832,8 @@ function finishPractice() {
   $('pracNextBtn').classList.add('hidden');
   $('pracPrevBtn').classList.add('hidden');
   $('pracProgress').textContent = '';
+  $('pracNavContainer').classList.add('hidden');
+  $('pracNavigator').innerHTML = '';
 
   saveState();
   updateHomeStats();
@@ -801,6 +956,7 @@ function submitExam() {
   const total = APP.currentList.length;
   const answered = APP.currentList.filter(q => APP.userAnswers[q.id] !== undefined).length;
   const correct = APP.currentList.filter(q => APP.userAnswers[q.id] === q.answer).length;
+  const timeUsed = APP.examTimeLeft > 0 ? (parseInt($('examTime').value) || 0) * 60 - APP.examTimeLeft : 0;
 
   // Record answers and update stats/wrong set
   for (const q of APP.currentList) {
@@ -813,6 +969,30 @@ function submitExam() {
       }
     }
   }
+
+  // Save to exam history
+  const details = APP.currentList.map(q => ({
+    id: q.id,
+    code: q.code,
+    type: q.type,
+    question: q.question,
+    options: q.options,
+    correctAnswer: q.answer,
+    userAnswer: APP.userAnswers[q.id] || null,
+    correct: APP.userAnswers[q.id] === q.answer,
+  }));
+  const historyEntry = {
+    timestamp: Date.now(),
+    type: $('examType').value,
+    total,
+    answered,
+    correct,
+    timeUsed,
+    details,
+  };
+  APP.examHistory.unshift(historyEntry);
+  // Keep max 50 records
+  if (APP.examHistory.length > 50) APP.examHistory.length = 50;
 
   const percentage = total > 0 ? Math.round(correct / total * 100) : 0;
   let emoji = '🎉';
@@ -827,7 +1007,8 @@ function submitExam() {
     <p class="text-sm text-gray-500">已答 ${answered} / ${total} 题</p>
     <p class="text-sm text-gray-500">答对 ${correct} 题</p>
     <p class="text-xl font-bold text-primary mt-1">${percentage}%</p>
-    <button onclick="switchTab('home')" class="mt-3 py-2 px-4 bg-primary text-white rounded-xl text-sm">返回首页</button>
+    <button onclick="switchTab('history')" class="mt-2 py-2 px-4 bg-gray-100 text-gray-600 rounded-xl text-sm">查看考试记录</button>
+    <button onclick="switchTab('home')" class="mt-2 py-2 px-4 bg-primary text-white rounded-xl text-sm">返回首页</button>
   `;
 
   $('examSubmitBtn').classList.add('hidden');
@@ -1145,11 +1326,121 @@ function resetStats() {
     APP.stats = {};
     APP.wrongQuestions.clear();
     APP.aiCache = {};
+    APP.examHistory = [];
     saveState();
     updateHomeStats();
     renderStats();
     renderWrongList();
   }
+}
+
+// ========== EXAM HISTORY ==========
+function renderHistory() {
+  const list = $('historyList');
+  if (APP.examHistory.length === 0) {
+    list.innerHTML = '<p class="text-gray-400 text-sm text-center py-10">还没有考试记录<br>去「模拟考试」做一套题吧</p>';
+    return;
+  }
+  let html = '';
+  for (let i = 0; i < APP.examHistory.length; i++) {
+    const h = APP.examHistory[i];
+    const date = new Date(h.timestamp);
+    const dateStr = `${date.getMonth()+1}/${date.getDate()} ${date.getHours().toString().padStart(2,'0')}:${date.getMinutes().toString().padStart(2,'0')}`;
+    const typeLabels = { mixed: '混合', single: '单选', judge: '判断' };
+    const typeStr = typeLabels[h.type] || h.type;
+    const pct = h.total > 0 ? Math.round(h.correct / h.total * 100) : 0;
+    const timeStr = h.timeUsed > 0 ? `${Math.floor(h.timeUsed / 60)}分${h.timeUsed % 60}秒` : '不限时';
+    let emoji = pct >= 90 ? '🏆' : pct >= 70 ? '👍' : pct >= 50 ? '📚' : '😢';
+    html += `
+      <div onclick="showExamDetail(${i})" class="flex items-center gap-3 bg-white border border-gray-200 rounded-xl p-3 active:bg-gray-50 cursor-pointer transition-all">
+        <span class="text-2xl">${emoji}</span>
+        <div class="flex-1 min-w-0">
+          <div class="flex items-center gap-2">
+            <span class="font-medium text-sm">${typeStr}</span>
+            <span class="text-xs text-gray-400">${dateStr}</span>
+          </div>
+          <div class="flex items-center gap-3 mt-1 text-xs text-gray-500">
+            <span>${pct}%</span>
+            <span>${h.correct}/${h.total}</span>
+            <span>${timeStr}</span>
+          </div>
+        </div>
+        <span class="text-lg text-gray-300">›</span>
+      </div>`;
+  }
+  list.innerHTML = html;
+}
+
+function showExamDetail(index) {
+  const h = APP.examHistory[index];
+  if (!h) return;
+
+  const typeLabels = { mixed: '混合出题', single: '单选题', judge: '判断题' };
+  const pct = h.total > 0 ? Math.round(h.correct / h.total * 100) : 0;
+  const timeStr = h.timeUsed > 0 ? `${Math.floor(h.timeUsed / 60)}分${h.timeUsed % 60}秒` : '不限时';
+  const date = new Date(h.timestamp);
+  const dateStr = `${date.getFullYear()}/${date.getMonth()+1}/${date.getDate()} ${date.getHours().toString().padStart(2,'0')}:${date.getMinutes().toString().padStart(2,'0')}`;
+
+  $('historyDetailTitle').textContent = `考试详情 · ${dateStr}`;
+
+  let qHtml = '';
+  for (const d of h.details) {
+    const labels = d.type === 'single' ? ['A','B','C','D'] : ['A','B'];
+    const isCorrect = d.correct;
+    const userIdx = d.userAnswer !== null ? labels.indexOf(d.userAnswer) : -1;
+    const correctIdx = labels.indexOf(d.correctAnswer);
+
+    let optHtml = '<div class="space-y-1 mt-2">';
+    for (let i = 0; i < d.options.length; i++) {
+      const letter = labels[i] || '';
+      const optText = d.options[i] || '';
+      let cls = 'flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm ';
+      const isUser = letter === d.userAnswer;
+      const isCorrectOpt = letter === d.correctAnswer;
+      if (isCorrectOpt) cls += ' bg-green-50 text-green-700 font-medium';
+      else if (isUser && !isCorrect) cls += ' bg-red-50 text-red-700';
+      else cls += ' text-gray-600';
+      const mark = isCorrectOpt ? ' ✓' : isUser && !isCorrect ? ' ✗' : '';
+      optHtml += `<div class="${cls}">${letter}. ${optText}${mark}</div>`;
+    }
+    optHtml += '</div>';
+
+    const typeTag = d.type === 'single'
+      ? '<span class="inline-block text-xs px-2 py-0.5 rounded-full bg-blue-100 text-blue-600">单选</span>'
+      : '<span class="inline-block text-xs px-2 py-0.5 rounded-full bg-amber-100 text-amber-600">判断</span>';
+
+    const statusIcon = isCorrect ? '✅' : '❌';
+
+    qHtml += `
+      <div class="border border-gray-200 rounded-xl p-3">
+        <div class="flex items-start gap-2">
+          <span>${statusIcon}</span>
+          <div class="flex-1 min-w-0">
+            <div class="flex items-center gap-2 mb-1">
+              ${typeTag}
+              <span class="text-xs text-gray-400">${d.code}</span>
+            </div>
+            <p class="text-sm leading-relaxed">${d.question}</p>
+            ${optHtml}
+          </div>
+        </div>
+      </div>`;
+  }
+
+  $('historyDetailContent').innerHTML = `
+    <div class="bg-gray-50 rounded-xl p-3 text-center">
+      <div class="text-2xl font-bold ${pct >= 70 ? 'text-primary' : 'text-danger'}">${pct}%</div>
+      <div class="text-xs text-gray-500 mt-1">${h.correct}/${h.total} 正确 · ${h.answered} 已答 · ${timeStr}</div>
+      <div class="text-xs text-gray-400 mt-1">${typeLabels[h.type] || h.type}</div>
+    </div>
+    ${qHtml}`;
+
+  $('historyView').classList.remove('active');
+  $('historyDetailView').classList.remove('hidden');
+  $('historyDetailView').classList.add('active');
+  $('headerTitle').textContent = '考试详情';
+  $('headerBackBtn').classList.remove('hidden');
+  $('headerBackBtn').onclick = () => { switchTab('history'); };
 }
 
 // ========== SETTINGS ==========
@@ -1172,6 +1463,7 @@ function saveState() {
     localStorage.setItem('caifu_wrong', JSON.stringify([...APP.wrongQuestions]));
     localStorage.setItem('caifu_api_key', APP.aiKey);
     localStorage.setItem('caifu_ai_cache', JSON.stringify(APP.aiCache));
+    localStorage.setItem('caifu_exam_history', JSON.stringify(APP.examHistory));
   } catch (e) {
     console.warn('Failed to save state:', e);
   }
@@ -1190,12 +1482,16 @@ function loadState() {
 
     const aiCache = localStorage.getItem('caifu_ai_cache');
     if (aiCache) APP.aiCache = JSON.parse(aiCache);
+
+    const history = localStorage.getItem('caifu_exam_history');
+    if (history) APP.examHistory = JSON.parse(history);
   } catch (e) {
     console.warn('Failed to load state:', e);
     APP.stats = {};
     APP.wrongQuestions = new Set();
     APP.aiKey = '';
     APP.aiCache = {};
+    APP.examHistory = [];
   }
 }
 
