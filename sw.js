@@ -1,5 +1,5 @@
 // Service Worker for 采气工中级刷题 PWA
-const CACHE_NAME = 'caifu-v2';
+const CACHE_NAME = 'caifu-v3';
 const FILES_TO_CACHE = [
   './standalone.html',
   './manifest.json',
@@ -29,15 +29,14 @@ self.addEventListener('activate', event => {
   self.clients.claim();
 });
 
-// Fetch: network-first then cache fallback
+// Fetch: cache-first (instant load, silent background update)
 self.addEventListener('fetch', event => {
-  // Only handle GET requests for same-origin
   if (event.request.method !== 'GET') return;
 
   event.respondWith(
-    fetch(event.request)
-      .then(response => {
-        // Cache successful responses
+    caches.match(event.request).then(cached => {
+      // Always try to update cache in background
+      const fetchPromise = fetch(event.request).then(response => {
         if (response.status === 200) {
           const clone = response.clone();
           caches.open(CACHE_NAME).then(cache => {
@@ -45,12 +44,10 @@ self.addEventListener('fetch', event => {
           });
         }
         return response;
-      })
-      .catch(() => {
-        // Offline: serve from cache
-        return caches.match(event.request).then(cached => {
-          return cached || caches.match('./standalone.html');
-        });
-      })
+      }).catch(() => null);
+
+      // Return cached immediately if available, otherwise wait for network
+      return cached || fetchPromise.then(r => r || caches.match('./standalone.html'));
+    })
   );
 });
