@@ -1,7 +1,10 @@
-// Service Worker for 采气工中级刷题 PWA
-const CACHE_NAME = 'caifu-v3';
+// Service Worker for multi-bank theory practice PWA
+const CACHE_NAME = 'theory-practice-v6';
 const FILES_TO_CACHE = [
-  './standalone.html',
+  './',
+  './index.html',
+  './app.js',
+  './catalog.json',
   './manifest.json',
 ];
 
@@ -9,9 +12,10 @@ const FILES_TO_CACHE = [
 self.addEventListener('install', event => {
   event.waitUntil(
     caches.open(CACHE_NAME).then(cache => {
-      return cache.addAll(FILES_TO_CACHE).catch(err => {
-        console.warn('SW: some files failed to pre-cache', err);
-      });
+      return Promise.all([
+        cache.addAll(FILES_TO_CACHE),
+        cache.add('https://cdn.tailwindcss.com').catch(() => null),
+      ]).catch(err => console.warn('SW: some files failed to pre-cache', err));
     })
   );
   self.skipWaiting();
@@ -37,7 +41,7 @@ self.addEventListener('fetch', event => {
     caches.match(event.request).then(cached => {
       // Always try to update cache in background
       const fetchPromise = fetch(event.request).then(response => {
-        if (response.status === 200) {
+        if (response.ok || response.type === 'opaque') {
           const clone = response.clone();
           caches.open(CACHE_NAME).then(cache => {
             cache.put(event.request, clone);
@@ -47,7 +51,7 @@ self.addEventListener('fetch', event => {
       }).catch(() => null);
 
       // Return cached immediately if available, otherwise wait for network
-      return cached || fetchPromise.then(r => r || caches.match('./standalone.html'));
+      return cached || fetchPromise.then(r => r || caches.match('./index.html'));
     })
   );
 });

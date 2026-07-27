@@ -1,0 +1,29 @@
+{
+  "schemaVersion": "1.0",
+  "banks": [
+    {
+      "id": "caqi-intermediate",
+      "title": "采气工-中级工理论",
+      "file": "banks/caqi-intermediate.v1.json",
+      "version": 1
+    },
+    {
+      "id": "shuqigong-junior",
+      "title": "输气工-初级工理论",
+      "file": "banks/shuqigong-junior.v1.json",
+      "version": 1
+    },
+    {
+      "id": "shuqigong-intermediate",
+      "title": "输气工-中级工理论",
+      "file": "banks/shuqigong-intermediate.v1.json",
+      "version": 1
+    },
+    {
+      "id": "shuqigong-senior",
+      "title": "输气工-高级工理论",
+      "file": "banks/shuqigong-senior.v1.json",
+      "version": 1
+    }
+  ]
+}
